@@ -1,5 +1,6 @@
 
 import os
+import numpy as np
 
 '''
 A script for generating SLURM submission scripts which sweep parameters
@@ -14,14 +15,16 @@ date:   7 Jan 2018
 # can contain unused fields
 
 DEFAULT_SLURM_FIELDS = {
-    'memory': 64,
+    'memory': 12,
     'memory_unit': 'GB',
     'num_nodes': 1,
-    'num_cpus': 16,
-    'time_d': 0, 'time_h': 0, 'time_m': 0, 'time_s': 0,
+    'num_cpus': 1,
+    'time_d': 0, 'time_h': 1, 'time_m': 0, 'time_s': 0,
     'reserve': 'nqit',
     'job_name': 'myjob',
-    'output': 'output.txt'
+    'output': 'output.txt',
+    'workspace' : '',
+    'command':''
 }
 
 
@@ -29,31 +32,31 @@ DEFAULT_SLURM_FIELDS = {
 # a template for the entire submit script
 # (bash braces must be escaped by doubling: $var = ${{var}})
 # num_jobs, param_arr_init, param_val_assign and param_list are special fields
+#SBATCH --nodes={num_nodes}
 
 TEMPLATE = '''
 
 #!/bin/env bash
 
 #SBATCH --array=0-{num_jobs}
-#SBATCH --job-name={job_name}
-#SBATCH --output={output}
-#SBATCH --mem={memory}{memory_unit}
+##SBATCH --job-name={job_name}
+##SBATCH --output={output}
+#SBATCH --mem-per-cpu={memory}{memory_unit}
 #SBATCH --time={time_d}-{time_h}:{time_m}:{time_s}
-#SBATCH --nodes={num_nodes}
 #SBATCH --cpus-per-task={num_cpus}
-#SBATCH --reservation={reserve}
+#SBATCH -C 'rhel7'
 
 {param_arr_init}
 
 trial=${{SLURM_ARRAY_TASK_ID}}
 {param_val_assign}
 
-source ../../prep.sh
-export OMP_NUM_THREADS={num_cpus}
-export OMP_PROC_BIND=spread
+{workspace}
 
 ## use {param_list} below
 
+{aggregate_assign_lines}
+{command}
 '''.strip()
 
 
@@ -132,12 +135,11 @@ def _get_params_bash(params, values):
 
     # remove superfluous final trial reassign
     assign_lines.pop()
-
     return init_lines, assign_lines
 
 
 
-def get_script(fields, params, param_order=None):
+def get_script(fields, params, param_order=None, aggregate_params=None, aggregate_param_order=None):
     '''
     returns a string of a SLURM submission script using the passed fields
     and which creates an array of jobs which sweep the given params
@@ -157,11 +159,19 @@ def get_script(fields, params, param_order=None):
     # check arguments have correct type
     assert isinstance(fields, dict)
     assert isinstance(params, dict)
+    assert (isinstance(aggregate_params, dict) or
+            aggregate_params==None)
     assert (isinstance(param_order, list) or
             isinstance(param_order, tuple) or
             param_order==None)
+    assert (isinstance(aggregate_param_order, list) or
+            isinstance(aggregate_param_order, tuple) or
+            aggregate_param_order==None)
     if param_order == None:
         param_order = list(params.keys())
+    if aggregate_params != None:
+        if aggregate_param_order == None:
+            aggregate_param_order = list(aggregate_params.keys())
 
     # check each field appears in the template
     for field in fields:
@@ -174,16 +184,34 @@ def get_script(fields, params, param_order=None):
         num_jobs *= len(vals)
     num_jobs -= 1
 
+    # calculate total number of aggregate jobs (minus 1; SLURM is inclusive)
+    if aggregate_params != None:
+        num_aggregate_jobs = 1
+        for vals in aggregate_params.values():
+            num_aggregate_jobs *= len(vals)
+        num_aggregate_jobs -= 1
+
     # get bash code for param sweeping
     init_lines, assign_lines = _get_params_bash(
         param_order, [params[key] for key in param_order])
 
+    # get bash code for param sweeping
+    aggregate_assign_lines = []
+    if aggregate_params != None:
+        aggregate_assign_lines = [f"for aggregate_iter in {{0..{num_aggregate_jobs}}}; do"]
+        aggregate_assign_lines.append('''trial=${aggregate_iter}''')
+        aggregate_init_lines, aggregate_assign_lines_temp = _get_params_bash(
+            aggregate_param_order, [aggregate_params[key] for key in aggregate_param_order])
+        init_lines += aggregate_init_lines
+        aggregate_assign_lines += aggregate_assign_lines_temp
+        fields['command'] += '\ndone'
     # build template substitutions (overriding defaults)
     subs = {
         'param_arr_init': '\n'.join(init_lines),
         'param_val_assign': '\n'.join(assign_lines),
         'param_list': ', '.join(map(_var, param_order)),
-        'num_jobs': num_jobs
+        'num_jobs': num_jobs,
+        'aggregate_assign_lines': '\n'.join(aggregate_assign_lines)
     }
     for key, val in DEFAULT_SLURM_FIELDS.items():
         subs[key] = val
@@ -193,7 +221,7 @@ def get_script(fields, params, param_order=None):
     return TEMPLATE.format(**subs)
 
 
-def save_script(filename, fields, params, param_order=None):
+def save_script(filename, fields, params, param_order=None, aggregate_params=None, aggregate_param_order=None):
     '''
     creates and writes to file a SLURM submission script using the passed
     fields and which creates an array of jobs which sweep the given params
@@ -209,8 +237,8 @@ def save_script(filename, fields, params, param_order=None):
                  of the params in the sweep. The last param changes every
                  job number. If not supplied, uses an arbitrary order
     '''
-    
-    script_str = get_script(fields, params, param_order)
+
+    script_str = get_script(fields, params, param_order, aggregate_params, aggregate_param_order)
     if ('/' in filename) or ('\\' in filename):
         os.makedirs(os.path.dirname(filename), exist_ok=True)
     with open(filename, 'w') as file:
@@ -227,8 +255,6 @@ if __name__ == '__main__':
     )
     print(script)
     '''
-
-    script = get_script({}, {'a':range(10), 'b':range(10), 'c':range(10)},
-                        param_order=['c','a','b'])
+    script = get_script({}, {'a':list(np.linspace(5,200,10)), 'b':list(np.linspace(0.05,0.5,10))},
+                        param_order=['a','b'])
     print(script)
-
