@@ -62,7 +62,7 @@ creates a file `mysubmit.sh` containing
 
 a_values=( 1 2 3 )
 b_values=( 4 5 6 )
-c_values=($( seq 7 1 10 ))
+c_values=($( seq 7 1 9 ))
 
 trial=${SLURM_ARRAY_TASK_ID}
 a=${a_values[$(( trial % ${#a_values[@]} ))]}
