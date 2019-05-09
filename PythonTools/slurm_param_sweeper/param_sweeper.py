@@ -198,7 +198,7 @@ def get_script(fields, params, param_order=None, aggregate_params=None, aggregat
     # get bash code for param sweeping
     aggregate_assign_lines = []
     if aggregate_params != None:
-        aggregate_assign_lines = [f"for aggregate_iter in {{0..{num_aggregate_jobs}}}; do"]
+        aggregate_assign_lines = ["for aggregate_iter in {{0..{num_aggregate_jobs}}}; do"]
         aggregate_assign_lines.append('''trial=${aggregate_iter}''')
         aggregate_init_lines, aggregate_assign_lines_temp = _get_params_bash(
             aggregate_param_order, [aggregate_params[key] for key in aggregate_param_order])
